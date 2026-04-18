@@ -1,0 +1,49 @@
+# .gitignore
+
+# Entorno virtual
+.venv/
+venv/
+env/
+ENV/
+
+# Archivos subidos
+uploads/
+
+# Configuración secreta
+.env
+
+# Base de datos
+sql_app.db
+*.sqlite
+*.sqlite3
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Dataset y modelos (pesados)
+app/ml/dataset/
+app/ml/models/*.keras
+app/ml/models/*.h5
+app/ml/models/*.hdf5
+
+# Archivos temporales
+*.log
+*.bak
+*.tmp
+temp/
+tmp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de prueba locales (opcional - quitar si quieres compartir)
+# test_bcrypt.py
+# test_email.py
