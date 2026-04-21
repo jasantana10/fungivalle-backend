@@ -1,14 +1,11 @@
 # app/models.py
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float, Boolean
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
-
-# UN SOLO BASE - IMPORTANTE
-Base = declarative_base()
+from app.database import Base
 
 
 # ========== MODELOS DE LA BASE DE DATOS ==========
