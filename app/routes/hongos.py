@@ -1,5 +1,4 @@
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
-import tensorflow as tf
 import numpy as np
 from PIL import Image
 import io
@@ -20,33 +19,50 @@ UPLOAD_DIR = BASE_DIR / "uploads" / "hongos"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Cargar modelo al iniciar
-MODELO_PATH = MODELOS_DIR / "modelo_finetuned.keras"
+MODELO_PATH_KERAS = MODELOS_DIR / "modelo_finetuned.keras"
+MODELO_PATH_TFLITE = MODELOS_DIR / "modelo_finetuned.tflite"
 CLASS_PATH = MODELOS_DIR / "class_names.json"
 
 # VARIABLE GLOBAL PARA EL MODELO
 model = None
+interpreter = None  # Para TFLite
 class_names = None
+model_type = None   # 'keras' o 'tflite'
 
 def load_model_on_startup():
-    global model, class_names
+    global model, interpreter, class_names, model_type
     print("🔄 Cargando modelo de hongos...")
     
-    # Verificar si existen los archivos
-    if not MODELO_PATH.exists():
-        print(f"❌ ERROR: El archivo del modelo no existe en {MODELO_PATH}")
-        # Listar contenido para depuración
+    # 1. Intentar cargar TFLite (Prioridad por memoria)
+    if MODELO_PATH_TFLITE.exists():
+        try:
+            import tflite_runtime.interpreter as tflite
+            interpreter = tflite.Interpreter(model_path=str(MODELO_PATH_TFLITE))
+            interpreter.allocate_tensors()
+            model_type = 'tflite'
+            print(f"✅ Modelo TFLITE cargado exitosamente: {MODELO_PATH_TFLITE}")
+        except Exception as e:
+            print(f"⚠️ Error cargando TFLite, intentando Keras: {e}")
+    
+    # 2. Si no hay TFLite o falló, intentar Keras
+    if model_type is None and MODELO_PATH_KERAS.exists():
+        try:
+            import tensorflow as tf
+            model = tf.keras.models.load_model(MODELO_PATH_KERAS)
+            model_type = 'keras'
+            print(f"✅ Modelo KERAS cargado exitosamente: {MODELO_PATH_KERAS}")
+        except Exception as e:
+            print(f"❌ Error fatal cargando Keras: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    if model_type is None:
+        print(f"❌ ERROR: No se encontró ningún modelo en {MODELOS_DIR}")
         if MODELOS_DIR.exists():
             print(f"Contenido de {MODELOS_DIR}: {os.listdir(MODELOS_DIR)}")
         return
 
-    try:
-        model = tf.keras.models.load_model(MODELO_PATH)
-        print(f"✅ Modelo cargado exitosamente: {MODELO_PATH}")
-    except Exception as e:
-        print(f"❌ Error fatal cargando modelo: {str(e)}")
-        import traceback
-        traceback.print_exc()
-
+    # Cargar clases
     try:
         if CLASS_PATH.exists():
             with open(CLASS_PATH, 'r', encoding='utf-8') as f:
@@ -57,14 +73,14 @@ def load_model_on_startup():
     except Exception as e:
         print(f"❌ Error cargando clases: {e}")
 
-# Ejecutar carga al importar (esto se puede mejorar con lifespan en FastAPI)
+# Ejecutar carga al importar
 load_model_on_startup()
 
 def preprocesar_imagen(contents):
     """Preprocesa imagen para el modelo"""
     img = Image.open(io.BytesIO(contents)).convert('RGB')
     img = img.resize((224, 224))
-    img_array = np.array(img) / 255.0
+    img_array = np.array(img, dtype=np.float32) / 255.0
     img_array = np.expand_dims(img_array, axis=0)
     return img_array, img
 
@@ -73,7 +89,7 @@ async def identificar_hongo(file: UploadFile = File(...)):
     """
     Identifica un hongo a partir de una imagen
     """
-    if not model or not class_names:
+    if model_type is None or not class_names:
         raise HTTPException(status_code=503, detail="Modelo no disponible")
     
     if not file.content_type.startswith('image/'):
@@ -87,7 +103,15 @@ async def identificar_hongo(file: UploadFile = File(...)):
         img_array, img_original = preprocesar_imagen(contents)
         
         # Predecir
-        predictions = model.predict(img_array, verbose=0)[0]
+        if model_type == 'tflite':
+            input_details = interpreter.get_input_details()
+            output_details = interpreter.get_output_details()
+            
+            interpreter.set_tensor(input_details[0]['index'], img_array)
+            interpreter.invoke()
+            predictions = interpreter.get_tensor(output_details[0]['index'])[0]
+        else:
+            predictions = model.predict(img_array, verbose=0)[0]
         
         # Mejor predicción
         idx = np.argmax(predictions)
