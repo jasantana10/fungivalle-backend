@@ -24,7 +24,7 @@ __pycache__/
 
 # Dataset y modelos (pesados)
 app/ml/dataset/
-app/ml/models/*.keras
+# app/ml/models/*.keras
 app/ml/models/*.h5
 app/ml/models/*.hdf5
 
