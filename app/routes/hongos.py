@@ -23,21 +23,42 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MODELO_PATH = MODELOS_DIR / "modelo_finetuned.keras"
 CLASS_PATH = MODELOS_DIR / "class_names.json"
 
-print("🔄 Cargando modelo de hongos...")
-try:
-    model = tf.keras.models.load_model(MODELO_PATH)
-    print(f"✅ Modelo cargado: {MODELO_PATH}")
-except Exception as e:
-    print(f"❌ Error cargando modelo: {e}")
-    model = None
+# VARIABLE GLOBAL PARA EL MODELO
+model = None
+class_names = None
 
-try:
-    with open(CLASS_PATH, 'r', encoding='utf-8') as f:
-        class_names = json.load(f)
-    print(f"✅ Clases cargadas: {len(class_names)} especies")
-except Exception as e:
-    print(f"❌ Error cargando clases: {e}")
-    class_names = None
+def load_model_on_startup():
+    global model, class_names
+    print("🔄 Cargando modelo de hongos...")
+    
+    # Verificar si existen los archivos
+    if not MODELO_PATH.exists():
+        print(f"❌ ERROR: El archivo del modelo no existe en {MODELO_PATH}")
+        # Listar contenido para depuración
+        if MODELOS_DIR.exists():
+            print(f"Contenido de {MODELOS_DIR}: {os.listdir(MODELOS_DIR)}")
+        return
+
+    try:
+        model = tf.keras.models.load_model(MODELO_PATH)
+        print(f"✅ Modelo cargado exitosamente: {MODELO_PATH}")
+    except Exception as e:
+        print(f"❌ Error fatal cargando modelo: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+    try:
+        if CLASS_PATH.exists():
+            with open(CLASS_PATH, 'r', encoding='utf-8') as f:
+                class_names = json.load(f)
+            print(f"✅ Clases cargadas: {len(class_names)} especies")
+        else:
+            print(f"❌ ERROR: El archivo de clases no existe en {CLASS_PATH}")
+    except Exception as e:
+        print(f"❌ Error cargando clases: {e}")
+
+# Ejecutar carga al importar (esto se puede mejorar con lifespan en FastAPI)
+load_model_on_startup()
 
 def preprocesar_imagen(contents):
     """Preprocesa imagen para el modelo"""
