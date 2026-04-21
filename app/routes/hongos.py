@@ -29,51 +29,58 @@ interpreter = None  # Para TFLite
 class_names = None
 model_type = None   # 'keras' o 'tflite'
 
+import threading
+
 def load_model_on_startup():
-    global model, interpreter, class_names, model_type
-    print("🔄 Cargando modelo de hongos...")
-    
-    # 1. Intentar cargar TFLite (Prioridad por memoria)
-    if MODELO_PATH_TFLITE.exists():
-        try:
-            import tflite_runtime.interpreter as tflite
-            interpreter = tflite.Interpreter(model_path=str(MODELO_PATH_TFLITE))
-            interpreter.allocate_tensors()
-            model_type = 'tflite'
-            print(f"✅ Modelo TFLITE cargado exitosamente: {MODELO_PATH_TFLITE}")
-        except Exception as e:
-            print(f"⚠️ Error cargando TFLite, intentando Keras: {e}")
-    
-    # 2. Si no hay TFLite o falló, intentar Keras
-    if model_type is None and MODELO_PATH_KERAS.exists():
-        try:
-            import tensorflow as tf
-            model = tf.keras.models.load_model(MODELO_PATH_KERAS)
-            model_type = 'keras'
-            print(f"✅ Modelo KERAS cargado exitosamente: {MODELO_PATH_KERAS}")
-        except Exception as e:
-            print(f"❌ Error fatal cargando Keras: {str(e)}")
-            import traceback
-            traceback.print_exc()
+    def load():
+        global model, interpreter, class_names, model_type
+        print("🔄 Cargando modelo de hongos (en segundo plano)...")
+        
+        # 1. Intentar cargar TFLite (Prioridad por memoria)
+        if MODELO_PATH_TFLITE.exists():
+            try:
+                import tflite_runtime.interpreter as tflite
+                interpreter = tflite.Interpreter(model_path=str(MODELO_PATH_TFLITE))
+                interpreter.allocate_tensors()
+                model_type = 'tflite'
+                print(f"✅ Modelo TFLITE cargado exitosamente: {MODELO_PATH_TFLITE}")
+            except Exception as e:
+                print(f"⚠️ Error cargando TFLite, intentando Keras: {e}")
+        
+        # 2. Si no hay TFLite o falló, intentar Keras (Solo si TFLite falló y el archivo existe)
+        if model_type is None and MODELO_PATH_KERAS.exists():
+            try:
+                import tensorflow as tf
+                model = tf.keras.models.load_model(MODELO_PATH_KERAS)
+                model_type = 'keras'
+                print(f"✅ Modelo KERAS cargado exitosamente: {MODELO_PATH_KERAS}")
+            except Exception as e:
+                print(f"❌ Error fatal cargando Keras: {str(e)}")
+                # import traceback
+                # traceback.print_exc()
 
-    if model_type is None:
-        print(f"❌ ERROR: No se encontró ningún modelo en {MODELOS_DIR}")
-        if MODELOS_DIR.exists():
-            print(f"Contenido de {MODELOS_DIR}: {os.listdir(MODELOS_DIR)}")
-        return
-
-    # Cargar clases
-    try:
-        if CLASS_PATH.exists():
-            with open(CLASS_PATH, 'r', encoding='utf-8') as f:
-                class_names = json.load(f)
-            print(f"✅ Clases cargadas: {len(class_names)} especies")
+        if model_type is None:
+            print(f"❌ ERROR: No se encontró ningún modelo en {MODELOS_DIR}")
+            if MODELOS_DIR.exists():
+                print(f"Contenido de {MODELOS_DIR}: {os.listdir(MODELOS_DIR)}")
         else:
-            print(f"❌ ERROR: El archivo de clases no existe en {CLASS_PATH}")
-    except Exception as e:
-        print(f"❌ Error cargando clases: {e}")
+            # Cargar clases solo si el modelo se cargó
+            try:
+                if CLASS_PATH.exists():
+                    with open(CLASS_PATH, 'r', encoding='utf-8') as f:
+                        class_names = json.load(f)
+                    print(f"✅ Clases cargadas: {len(class_names)} especies")
+                else:
+                    print(f"❌ ERROR: El archivo de clases no existe en {CLASS_PATH}")
+            except Exception as e:
+                print(f"❌ Error cargando clases: {e}")
+    
+    # Ejecutar en un hilo separado para no bloquear el inicio del servidor
+    thread = threading.Thread(target=load)
+    thread.daemon = True
+    thread.start()
 
-# Ejecutar carga al importar
+# Ejecutar carga al importar (ahora es asíncrona)
 load_model_on_startup()
 
 def preprocesar_imagen(contents):

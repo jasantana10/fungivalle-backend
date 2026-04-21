@@ -19,9 +19,8 @@ if "mysql" in DATABASE_URL:
     # MySQL specific args if any
     pass
 elif "postgresql" in DATABASE_URL:
-    # PostgreSQL specific args (like SSL for Supabase)
-    # connect_args = {"sslmode": "require"}
-    pass
+    # PostgreSQL specific args (required for Supabase pooler)
+    connect_args = {"sslmode": "require"}
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

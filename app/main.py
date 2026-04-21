@@ -10,8 +10,13 @@ from app.routes import profile
 from app.routes import security_auth
 from app.routes import hongos, fungi_findings
 
-# Crear tablas en la base de datos
-Base.metadata.create_all(bind=engine)
+# Crear tablas en la base de datos (con manejo de errores para evitar que el servidor no suba)
+try:
+    Base.metadata.create_all(bind=engine)
+    print("✅ Tablas de base de datos verificadas/creadas")
+except Exception as e:
+    print(f"⚠️ Error al conectar o crear tablas: {e}")
+    print("El servidor intentará continuar, pero las funciones de DB podrían fallar.")
 
 app = FastAPI(
     title="FungiValle API",

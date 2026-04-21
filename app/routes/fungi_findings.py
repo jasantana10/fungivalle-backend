@@ -3,7 +3,6 @@
 from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, Form
 from typing import Optional, List
 import numpy as np
-import tensorflow as tf
 import json
 from datetime import datetime
 from pathlib import Path
@@ -30,25 +29,42 @@ embedding_model = None
 def load_embedding_model():
     global embedding_model
     if embedding_model is None:
-        base_model = tf.keras.applications.MobileNetV2(
-            weights='imagenet',
-            include_top=False,
-            input_shape=(224, 224, 3),
-            pooling='avg'
-        )
-        embedding_model = base_model
+        try:
+            import tensorflow as tf
+            base_model = tf.keras.applications.MobileNetV2(
+                weights='imagenet',
+                include_top=False,
+                input_shape=(224, 224, 3),
+                pooling='avg'
+            )
+            embedding_model = base_model
+            print("✅ Modelo de embeddings cargado (TensorFlow)")
+        except ImportError:
+            print("⚠️ TensorFlow no instalado. Embeddings deshabilitados.")
+            return None
     return embedding_model
 
 def extract_embedding(image_path):
     """Extrae vector de características de la imagen"""
     model = load_embedding_model()
-    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
-    img_array = tf.keras.preprocessing.image.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0)
-    img_array = img_array / 255.0
-    
-    embedding = model.predict(img_array, verbose=0)[0]
-    return embedding.tolist()
+    if model is None:
+        # Devolver un vector de ceros si no hay modelo (MobileNetV2 tiene 1280 dimensiones)
+        return [0.0] * 1280
+
+    try:
+        import tensorflow as tf
+        from PIL import Image
+        img = Image.open(image_path).convert('RGB')
+        img = img.resize((224, 224))
+        img_array = np.array(img, dtype=np.float32)
+        img_array = np.expand_dims(img_array, axis=0)
+        img_array = img_array / 255.0
+        
+        embedding = model.predict(img_array, verbose=0)[0]
+        return embedding.tolist()
+    except Exception as e:
+        print(f"❌ Error extrayendo embedding: {e}")
+        return [0.0] * 1280
 
 
 @router.post("/guardar")
