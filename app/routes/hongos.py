@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import uuid
 from datetime import datetime
+import threading
+import joblib
 
 router = APIRouter(prefix="/hongos", tags=["hongos"])
 
@@ -19,61 +21,74 @@ UPLOAD_DIR = BASE_DIR / "uploads" / "hongos"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Cargar modelo al iniciar
-MODELO_PATH_KERAS = MODELOS_DIR / "modelo_finetuned.keras"
-MODELO_PATH_TFLITE = MODELOS_DIR / "modelo_finetuned.tflite"
+MODELO_PATH_SKLEARN = MODELOS_DIR / "modelo_sklearn.pkl"
+SCALER_PATH = MODELOS_DIR / "scaler.pkl"
 CLASS_PATH = MODELOS_DIR / "class_names.json"
 
 # VARIABLE GLOBAL PARA EL MODELO
-model = None
-interpreter = None  # Para TFLite
+sklearn_model = None
+scaler = None
 class_names = None
-model_type = None   # 'keras' o 'tflite'
+model_ready = False
 
-import threading
+# MobileNetV2 para extracción de características (solo se carga una vez, sin pesos entrenables)
+feature_extractor = None
+
+def load_feature_extractor():
+    global feature_extractor
+    if feature_extractor is None:
+        try:
+            import tensorflow as tf
+            from tensorflow.keras.applications import MobileNetV2
+            from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+            from tensorflow.keras.preprocessing.image import img_to_array
+            
+            feature_extractor = {
+                'model': MobileNetV2(
+                    weights='imagenet',
+                    include_top=False,
+                    input_shape=(224, 224, 3),
+                    pooling='avg'
+                ),
+                'preprocess_input': preprocess_input,
+                'img_to_array': img_to_array
+            }
+            print("✅ Extractor de características (MobileNetV2) cargado")
+        except ImportError:
+            print("⚠️ TensorFlow no disponible. Usando extractor ligero (solo para inferencia)...")
+            feature_extractor = None
+    return feature_extractor
 
 def load_model_on_startup():
     def load():
-        global model, interpreter, class_names, model_type
-        print("🔄 Cargando modelo de hongos (en segundo plano)...")
+        global sklearn_model, scaler, class_names, model_ready
+        print("🔄 Cargando modelo de hongos (Scikit-learn)...")
         
-        # 1. Intentar cargar TFLite (Prioridad por memoria)
-        if MODELO_PATH_TFLITE.exists():
-            try:
-                import tflite_runtime.interpreter as tflite
-                interpreter = tflite.Interpreter(model_path=str(MODELO_PATH_TFLITE))
-                interpreter.allocate_tensors()
-                model_type = 'tflite'
-                print(f"✅ Modelo TFLITE cargado exitosamente: {MODELO_PATH_TFLITE}")
-            except Exception as e:
-                print(f"⚠️ Error cargando TFLite, intentando Keras: {e}")
+        # Cargar extractor de características primero
+        load_feature_extractor()
         
-        # 2. Si no hay TFLite o falló, intentar Keras (Solo si TFLite falló y el archivo existe)
-        if model_type is None and MODELO_PATH_KERAS.exists():
+        # 1. Intentar cargar Scikit-learn (Prioridad: más ligero)
+        if MODELO_PATH_SKLEARN.exists() and SCALER_PATH.exists():
             try:
-                import tensorflow as tf
-                model = tf.keras.models.load_model(MODELO_PATH_KERAS)
-                model_type = 'keras'
-                print(f"✅ Modelo KERAS cargado exitosamente: {MODELO_PATH_KERAS}")
+                sklearn_model = joblib.load(MODELO_PATH_SKLEARN)
+                scaler = joblib.load(SCALER_PATH)
+                print(f"✅ Modelo SKLEARN cargado exitosamente: {MODELO_PATH_SKLEARN}")
             except Exception as e:
-                print(f"❌ Error fatal cargando Keras: {str(e)}")
-                # import traceback
-                # traceback.print_exc()
-
-        if model_type is None:
-            print(f"❌ ERROR: No se encontró ningún modelo en {MODELOS_DIR}")
-            if MODELOS_DIR.exists():
-                print(f"Contenido de {MODELOS_DIR}: {os.listdir(MODELOS_DIR)}")
-        else:
-            # Cargar clases solo si el modelo se cargó
-            try:
-                if CLASS_PATH.exists():
-                    with open(CLASS_PATH, 'r', encoding='utf-8') as f:
-                        class_names = json.load(f)
-                    print(f"✅ Clases cargadas: {len(class_names)} especies")
-                else:
-                    print(f"❌ ERROR: El archivo de clases no existe en {CLASS_PATH}")
-            except Exception as e:
-                print(f"❌ Error cargando clases: {e}")
+                print(f"⚠️ Error cargando Scikit-learn: {e}")
+        
+        # Cargar clases
+        try:
+            if CLASS_PATH.exists():
+                with open(CLASS_PATH, 'r', encoding='utf-8') as f:
+                    class_names = json.load(f)
+                print(f"✅ Clases cargadas: {len(class_names)} especies")
+            else:
+                print(f"❌ ERROR: El archivo de clases no existe en {CLASS_PATH}")
+        except Exception as e:
+            print(f"❌ Error cargando clases: {e}")
+        
+        model_ready = True
+        print("✅ Carga del modelo completada")
     
     # Ejecutar en un hilo separado para no bloquear el inicio del servidor
     thread = threading.Thread(target=load)
@@ -83,20 +98,33 @@ def load_model_on_startup():
 # Ejecutar carga al importar (ahora es asíncrona)
 load_model_on_startup()
 
-def preprocesar_imagen(contents):
-    """Preprocesa imagen para el modelo"""
+def extract_features(contents):
+    """Extrae características de una imagen usando MobileNetV2 (si está disponible)"""
+    fe = load_feature_extractor()
+    
     img = Image.open(io.BytesIO(contents)).convert('RGB')
     img = img.resize((224, 224))
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array, img
+    
+    if fe:
+        # Usar MobileNetV2 para características (mejor precisión)
+        img_array = fe['img_to_array'](img)
+        img_array = np.expand_dims(img_array, axis=0)
+        img_array = fe['preprocess_input'](img_array)
+        return fe['model'].predict(img_array, verbose=0)[0]
+    else:
+        # Fallback: características simples (píxeles aplanados)
+        img_array = np.array(img, dtype=np.float32) / 255.0
+        return img_array.flatten()[:1280]  # Mismo tamaño que MobileNetV2
 
 @router.post("/identificar")
 async def identificar_hongo(file: UploadFile = File(...)):
     """
-    Identifica un hongo a partir de una imagen
+    Identifica un hongo a partir de una imagen usando Scikit-learn
     """
-    if model_type is None or not class_names:
+    if not model_ready:
+        raise HTTPException(status_code=503, detail="Modelo aún cargándose, por favor intenta en unos segundos")
+    
+    if sklearn_model is None or scaler is None or not class_names:
         raise HTTPException(status_code=503, detail="Modelo no disponible")
     
     if not file.content_type.startswith('image/'):
@@ -106,36 +134,28 @@ async def identificar_hongo(file: UploadFile = File(...)):
         # Leer imagen
         contents = await file.read()
         
-        # Preprocesar
-        img_array, img_original = preprocesar_imagen(contents)
+        # Extraer características
+        features = extract_features(contents)
+        features_scaled = scaler.transform([features])
         
         # Predecir
-        if model_type == 'tflite':
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
-            
-            interpreter.set_tensor(input_details[0]['index'], img_array)
-            interpreter.invoke()
-            predictions = interpreter.get_tensor(output_details[0]['index'])[0]
-        else:
-            predictions = model.predict(img_array, verbose=0)[0]
-        
-        # Mejor predicción
-        idx = np.argmax(predictions)
-        confianza = float(predictions[idx])
+        predictions_proba = sklearn_model.predict_proba(features_scaled)[0]
+        idx = np.argmax(predictions_proba)
+        confianza = float(predictions_proba[idx])
         especie = class_names[str(idx)]
         
         # Guardar imagen
         filename = f"{uuid.uuid4()}.jpg"
         filepath = UPLOAD_DIR / filename
+        img_original = Image.open(io.BytesIO(contents))
         img_original.save(filepath)
         
         # Top 3 predicciones
-        top_3_idx = np.argsort(predictions)[-3:][::-1]
+        top_3_idx = np.argsort(predictions_proba)[-3:][::-1]
         sugerencias = [
             {
                 "especie": class_names[str(tidx)],
-                "confianza": float(predictions[tidx])
+                "confianza": float(predictions_proba[tidx])
             }
             for tidx in top_3_idx
         ]
@@ -144,41 +164,12 @@ async def identificar_hongo(file: UploadFile = File(...)):
             "success": True,
             "especie": especie,
             "confianza": confianza,
-            "confianza_porcentaje": f"{confianza*100:.2f}%",
             "sugerencias": sugerencias,
-            "imagen_url": f"/uploads/hongos/{filename}",
-            "timestamp": datetime.now().isoformat()
+            "modelo_usado": "scikit-learn",
+            "imagen_url": f"/uploads/hongos/{filename}"
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/especies")
-async def listar_especies():
-    """
-    Lista todas las especies que puede identificar el modelo
-    """
-    if not class_names:
-        raise HTTPException(status_code=503, detail="Modelo no disponible")
-    
-    especies = []
-    for idx, nombre in class_names.items():
-        especies.append({
-            "id": int(idx),
-            "nombre_cientifico": nombre,
-            "nombre_comun": nombre.replace("_", " ").title()
-        })
-    
-    return {"especies": especies}
-
-@router.get("/estado")
-async def estado_modelo():
-    """
-    Verifica el estado del modelo
-    """
-    return {
-        "modelo_cargado": model is not None,
-        "especies_capacidad": len(class_names) if class_names else 0,
-        "modelo_path": str(MODELO_PATH),
-        "clases_path": str(CLASS_PATH)
-    }
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
